@@ -1,7 +1,7 @@
+# TODO 1: IMPORTS
 from datetime import date
-from flask import Flask, abort, render_template, redirect, url_for, flash
+from flask import Flask, abort, render_template, redirect, url_for, flash, request
 from flask_bootstrap import Bootstrap5
-from flask_ckeditor import CKEditor
 from flask_gravatar import Gravatar
 from flask_login import UserMixin, login_user, LoginManager, current_user, logout_user
 from flask_sqlalchemy import SQLAlchemy
@@ -9,30 +9,24 @@ from sqlalchemy.orm import relationship, DeclarativeBase, Mapped, mapped_column
 from sqlalchemy import Integer, String, Text
 from functools import wraps
 from werkzeug.security import generate_password_hash, check_password_hash
-# Import your forms from the forms.py
 from forms import CreatePostForm, RegisterForm, LoginForm, CommentForm
-from flask_wtf import FlaskForm
-from wtforms import StringField, SubmitField, PasswordField
-from wtforms.validators import DataRequired, URL
-from flask_ckeditor import CKEditor, CKEditorField
+from flask_ckeditor import CKEditor
 import os
+import smtplib
 
+
+# TODO 2: SET-UP CONSTANTS
 app = Flask(__name__)
 app.config['SECRET_KEY'] = os.environ.get('FLASK_KEY')
+MY_EMAIL = os.environ.get('MY_EMAIL')
+MY_PASSWORD = os.environ.get('MY_PASSWORD')
 ckeditor = CKEditor(app)
 Bootstrap5(app)
-
-gravatar = Gravatar(app,
-                    size=150,
-                    rating='g',
-                    default='retro',
-                    force_default=False,
-                    force_lower=False,
-                    use_ssl=False,
-                    base_url=None)
+gravatar = Gravatar(app, size=150, rating='g', default='retro', force_default=False,
+                    force_lower=False, use_ssl=False, base_url=None)
 
 
-# CREATE DATABASE
+# TODO 3.1: CREATE THE DATABASE
 class Base(DeclarativeBase):
     pass
 
@@ -41,7 +35,7 @@ app.config['SQLALCHEMY_DATABASE_URI'] = os.environ.get("DB_URI", "sqlite:///post
 db = SQLAlchemy(model_class=Base)
 db.init_app(app)
 
-
+# TODO 3.2: LOGINS ENABLED
 login_manager = LoginManager()
 login_manager.init_app(app)
 
@@ -60,8 +54,7 @@ def admin_only(f):
     return decorated_function
 
 
-# CONFIGURE TABLES
-# TODO: Create a User table for all your registered users.
+# TODO 4.1: CREATE USER TABLE
 class User(UserMixin, db.Model):
     __tablename__ = "users"
     id: Mapped[int] = mapped_column(Integer, primary_key=True)
@@ -72,6 +65,7 @@ class User(UserMixin, db.Model):
     comments = relationship("Comment", back_populates="comment_author")
 
 
+# TODO 4.2: CREATE POSTS TABLE
 class BlogPost(db.Model):
     __tablename__ = "blog_posts"
     id: Mapped[int] = mapped_column(Integer, primary_key=True)
@@ -85,6 +79,7 @@ class BlogPost(db.Model):
     comments = relationship("Comment", back_populates="parent_post")
 
 
+# TODO 4.3: CREATE COMMENTS TABLE
 class Comment(db.Model):
     __tablename__ = "comments"
     id: Mapped[int] = mapped_column(Integer, primary_key=True)
@@ -99,7 +94,7 @@ with app.app_context():
     db.create_all()
 
 
-# TODO: Use Werkzeug to hash the user's password when creating a new user.
+# TODO 5: REGISTER ROUTE SHOULD HASH AND SALT PASSWORD AND SAVE USER DETAILS TO THE DB
 @app.route('/register', methods=["GET", "POST"])
 def register():
     form = RegisterForm()
@@ -117,42 +112,40 @@ def register():
             db.session.commit()
             login_user(new_user)
             return redirect(url_for("get_all_posts"))
-
         else:
             flash("You've already signed up with that email - please log in instead!")
             return redirect(url_for('login'))
-
     return render_template("register.html", form=form, current_user=current_user)
 
 
-# TODO: Retrieve a user from the database based on their email. 
+# TODO 6: LOGIN ROUTE SHOULD CHECK FOR EMAIL IN DB AND CONFIRM PASSWORD IS ALSO CORRECT
 @app.route('/login', methods=["GET", "POST"])
 def login():
     form = LoginForm()
     if form.validate_on_submit():
         password = form.password.data
-
         result = db.session.execute(db.select(User).where(User.email == form.email.data))
         user = result.scalar()
         if not user:
-            flash("That email does not exist, please try again.")
+            flash("There is no account registered with that email, please try again.")
             return redirect(url_for('login'))
         elif not check_password_hash(user.password, password):
-            flash('Password incorrect, please try again.')
+            flash('The password provided is incorrect, please try again.')
             return redirect(url_for('login'))
         else:
             login_user(user)
             return redirect(url_for('get_all_posts'))
-
     return render_template("login.html", form=form, current_user=current_user)
 
 
+# TODO 7: USE LOGINMANAGER TO LOG OUT USERS
 @app.route('/logout')
 def logout():
     logout_user()
     return redirect(url_for('get_all_posts'))
 
 
+# TODO 8: GET ALL POSTS FROM THE DB
 @app.route('/')
 def get_all_posts():
     result = db.session.execute(db.select(BlogPost))
@@ -160,7 +153,7 @@ def get_all_posts():
     return render_template("index.html", all_posts=posts, current_user=current_user)
 
 
-# TODO: Allow logged-in users to comment on posts
+# TODO 9: CHANGE ROUTE DEPENDING ON POST AND ENABLE USERS TO COMMENT - SAVE COMMENTS TO THE DB
 @app.route("/post/<int:post_id>", methods={"GET", "POST"})
 def show_post(post_id):
     requested_post = db.get_or_404(BlogPost, post_id)
@@ -176,11 +169,10 @@ def show_post(post_id):
         )
         db.session.add(new_comment)
         db.session.commit()
-
     return render_template("post.html", post=requested_post, current_user=current_user, form=comment_form)
 
 
-# TODO: Use a decorator so only an admin user can create a new post
+# TODO 10: CREATE NEW POSTS UNDER ADMIN ROUTE AND SAVE TO THE DB
 @app.route("/new-post", methods=["GET", "POST"])
 @admin_only
 def add_new_post():
@@ -200,7 +192,7 @@ def add_new_post():
     return render_template("make-post.html", form=form, current_user=current_user)
 
 
-# TODO: Use a decorator so only an admin user can edit a post
+# TODO 11: EDIT POSTS UNDER ADMIN ROUTE AND UPDATE IN DB
 @app.route("/edit-post/<int:post_id>", methods=["GET", "POST"])
 @admin_only
 def edit_post(post_id):
@@ -223,7 +215,7 @@ def edit_post(post_id):
     return render_template("make-post.html", form=edit_form, is_edit=True, current_user=current_user)
 
 
-# TODO: Use a decorator so only an admin user can delete a post
+# TODO 12: DELETE POSTS UNDER ADMIN ROUTE
 @app.route("/delete/<int:post_id>")
 @admin_only
 def delete_post(post_id):
@@ -238,10 +230,23 @@ def about():
     return render_template("about.html", current_user=current_user)
 
 
-@app.route("/contact")
-def contact():
-    return render_template("contact.html", current_user=current_user)
+# TODO 13: CREATE FUNCTION TO SEND EMAILS
+def send_email(name, email, phone, message):
+    email_message = f"Subject:New Message\n\nName: {name}\nEmail: {email}\nPhone: {phone}\nMessage:{message}"
+    with smtplib.SMTP("smtp.gmail.com") as connection:
+        connection.starttls()
+        connection.login(MY_EMAIL, MY_PASSWORD)
+        connection.sendmail(MY_EMAIL, MY_EMAIL, email_message)
 
+
+# TODO 13.2: SEND EMAIL ON FORM SUBMISSION
+@app.route("/contact", methods=["GET", "POST"])
+def contact():
+    if request.method == "POST":
+        data = request.form
+        send_email(data["name"], data["email"], data["phone"], data["message"])
+        return render_template("contact.html", msg_sent=True)
+    return render_template("contact.html", current_user=current_user, msg_sent=False)
 
 if __name__ == "__main__":
     app.run(debug=False, port=5002)
